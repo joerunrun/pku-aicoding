@@ -14,4 +14,4 @@ class net(nn.Module):
             x=self.flatten(x)
             x=self.f(x)
             return x
-menet=net()   
+mynet=net()  
