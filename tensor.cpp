@@ -1,35 +1,66 @@
+#include "cuda_runtime.h"
+#include "device_launch_parameters.h"
 #include <iostream>
-#include <vector>
-#include <string>
-#include <cuda_runtime.h>
+#include <stdio.h>
+#include<vector>
+#include<string>
 using IntVector = std::vector<int>;
 using FloatVector = std::vector<float>;
+__global__ void relu_kernel(float* input, float* output, int size) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < size) {
+        output[idx] = input[idx]>0? input[idx] : 0;
+    }
+}
 
+
+__global__ void sigmoid_kernel(float* input, float* output, int size) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < size) {
+        output[idx] = 1 / (1 + exp(-input[idx]));
+    }
+}
+
+__global__ void relu_backward_kernel(float* input, float* grad, float* output, int size) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < size) {
+        output[idx] = input[idx] > 0 ? grad[idx] : 0;
+    }
+}
 
 class Tensor {
 public:
+    std::vector<int> shape_;
+    std::string device_;
+    float* data_;
+    float* device_data;
+    int lenth = 1;
     // 构造函数
-    Tensor( std::vector<int>& shape, const std::string& device) 
-         {
-            this->shape_ = shape;
-            this->device_ = device;
-            this->data_.resize(1);
-            for (int dim : shape) {
-                this->data_[0] *= dim;
-            }
-            this->data_.resize(data_[0]);
+    Tensor(std::vector<int>& shape, const std::string& device)
+    {
+        this->shape_ = shape;
+        this->device_ = device;
+        
+        for (int dim : shape) {
+            lenth *= dim;
+        }
+        data_ = new float(lenth);
         if (device_ == "cpu") {
             std::cout << "Tensor on CPU" << std::endl;
-        } 
+        }
         else {
             float* device_data;
             std::cout << "Tensor on GPU" << std::endl;
-            cudaMalloc(&device_data, data_.size() * sizeof(float));
-            cudaMemcpy(device_data, data_.data(), data_.size() * sizeof(float), cudaMemcpyHostToDevice);
+            cudaMalloc(&device_data, lenth * sizeof(float));
+            cudaMemcpy(device_data, data_, lenth * sizeof(float), cudaMemcpyHostToDevice);
         }
-        
+
     }
     
+
+
+
+
     // 析构函数
     ~Tensor() {
         std::cout << "Tensor destroyed" << std::endl;
@@ -43,25 +74,28 @@ public:
         if (device_ != "cpu") {
             device_ = "cpu";
             std::cout << "Tensor moved to CPU" << std::endl;
-            Tensor* newtensor=new Tensor(this ->shape_, "cpu");
-            cudaMemcpy(newtensor, data_.data(), data_.size() * sizeof(int), cudaMemcpyDeviceToHost);
+            Tensor* newtensor = new Tensor(this->shape_, "cpu");
+            cudaMemcpy(newtensor, data_, lenth * sizeof(int), cudaMemcpyDeviceToHost);
             return newtensor;
-        } else {
+        }
+        else {
             std::cout << "Tensor is already on CPU" << std::endl;
         }
     }
 
     // 切换到GPU
-    Tensor*  gpu() {
+    Tensor gpu() {
         if (device_ != "gpu") {
-            
+
             std::cout << "Tensor moved to GPU" << std::endl;
-            Tensor* newtensor;
-            cudaMalloc(&newtensor, data_.size() * sizeof(float));
-            cudaMemcpy(newtensor, data_.data(), data_.size() * sizeof(int), cudaMemcpyHostToDevice);
-            newtensor->device_ = "gpu";
+            Tensor newtensor(this->shape_,"gpu");
+            float* datanew = this->data_;
+            cudaMalloc(&datanew, lenth * sizeof(float));
+            cudaMemcpy(datanew, data_, lenth * sizeof(float), cudaMemcpyHostToDevice);
+            newtensor.data_ = datanew;
             return newtensor;
-        } else {
+        }
+        else {
             std::cout << "Tensor is already on GPU" << std::endl;
         }
     }
@@ -69,9 +103,10 @@ public:
     // 设置张量的值
     void set_value(const std::vector<int>& indices, int value) {
         int index = get_flat_index(indices);
-        if (index >= 0 && index < data_.size()) {
+        if (index >= 0 && index < lenth) {
             data_[index] = value;
-        } else {
+        }
+        else {
             std::cerr << "Index out of bounds" << std::endl;
         }
     }
@@ -79,71 +114,72 @@ public:
     // 获取张量的值
     int get_value(const std::vector<int>& indices) const {
         int index = get_flat_index(indices);
-        if (index >= 0 && index < data_.size()) {
+        if (index >= 0 && index < lenth) {
             return data_[index];
-        } else {
+        }
+        else {
             std::cerr << "Index out of bounds" << std::endl;
             return -1; // 返回一个错误值
         }
     }
-    FloatVector relu() {
+    void relu() {
+
+        float* output=new float(lenth);
+        float* input = &(this->data_[0]);
         
-    FloatVector output;
-    FloatVector* input=&(this->data_);
-    output.resize(input.size());
-    float* device_input;
-    float* device_output;
-    cudaMalloc(&device_input, input.size() * sizeof(float));
-    cudaMalloc(&device_output, input.size() * sizeof(float));
-    cudaMemcpy(device_input, input, input.size() * sizeof(float), cudaMemcpyHostToDevice);
-    relu_kernel<<<(input.size() + 255) / 256, 256>>>(device_input, device_output, input.size());
-    cudaMemcpy(output.data(), device_output, input.size() * sizeof(float), cudaMemcpyDeviceToHost);
-    cudaFree(device_input);
-    cudaFree(device_output);
-    return output;
-}
-    
-    FloatVector sigmoid() {
-        FloatVector output;
-        FloatVector input=this->data_;
-        output.resize(input.size());
         float* device_input;
         float* device_output;
-        cudaMalloc(&device_input, input.size() * sizeof(float));
-        cudaMalloc(&device_output, input.size() * sizeof(float));
-        cudaMemcpy(device_input, input, input.size() * sizeof(float), cudaMemcpyHostToDevice);
-        sigmoid_kernel<<<(input.size() + 255) / 256, 256>>>(device_input, device_output, input.size());
-        cudaMemcpy(output.data(), device_output, input.size() * sizeof(float), cudaMemcpyDeviceToHost);
+        cudaMalloc(&device_input, lenth * sizeof(float));
+        cudaMalloc(&device_output, lenth * sizeof(float));
+        cudaMemcpy(device_input, input, lenth * sizeof(float), cudaMemcpyHostToDevice);
+        relu_kernel <<<(lenth + 255) / 256, 256 >>> (device_input, device_output,lenth);
+        cudaMemcpy(output, device_output, lenth * sizeof(float), cudaMemcpyDeviceToHost);
         cudaFree(device_input);
         cudaFree(device_output);
-        return output;
+        this->data_ = output;
     }
-    FloatVector relu_backward(FloatVector grad) {
-        FloatVector output;
-        FloatVector input=this->data_;
-        output.resize(input.size());
+
+    void sigmoid() {
+        float* output;
+        float* input = &(this->data_[0]);
+
+        float* device_input;
+        float* device_output;
+        cudaMalloc(&device_input, lenth * sizeof(float));
+        cudaMalloc(&device_output, lenth * sizeof(float));
+        cudaMemcpy(device_input, input, lenth * sizeof(float), cudaMemcpyHostToDevice);
+        sigmoid_kernel << <(lenth + 255) / 256, 256 >> > (device_input, device_output, lenth);
+        cudaMemcpy(output, device_output, lenth * sizeof(float), cudaMemcpyDeviceToHost);
+        cudaFree(device_input);
+        cudaFree(device_output);
+        this->data_ = output;
+    }
+     Tensor relu_backward(Tensor& grad) {
+        float* output;
+        float* input = this->data_;
+        
         float* device_input;
         float* device_output;
         float* device_grad;
-        cudaMalloc(&device_input, input.size() * sizeof(float));
-        cudaMalloc(&device_output, input.size() * sizeof(float));
-        cudaMalloc(&device_grad, grad.size() * sizeof(float));
-        cudaMemcpy(device_input, input, input.size() * sizeof(float), cudaMemcpyHostToDevice);
-        cudaMemcpy(device_grad, grad, grad.size() * sizeof(float), cudaMemcpyHostToDevice);
-        relu_backward_kernel<<<(input.size() + 255) / 256, 256>>>(device_input, device_grad, device_output, input.size());
-        cudaMemcpy(output.data(), device_output, input.size() * sizeof(float), cudaMemcpyDeviceToHost);
+        cudaMalloc(&device_input, lenth * sizeof(float));
+        cudaMalloc(&device_output, lenth * sizeof(float));
+        cudaMalloc(&device_grad, grad.lenth * sizeof(float));
+        cudaMemcpy(device_input, input, lenth * sizeof(float), cudaMemcpyHostToDevice);
+        cudaMemcpy(device_grad, grad.data_, grad.lenth * sizeof(float), cudaMemcpyHostToDevice);
+        relu_backward_kernel <<<(lenth + 255) / 256, 256 >>> (device_input, device_grad, device_output, lenth);
+        cudaMemcpy(output, device_output, lenth * sizeof(float), cudaMemcpyDeviceToHost);
         cudaFree(device_input);
         cudaFree(device_output);
         cudaFree(device_grad);
-        return output;
+        grad.data_ = output;
+        return grad;
     }
+    
 
 
 private:
-    std::vector<int> shape_;
-    std::string device_;
-    std::vector<float> data_; // 用于存储张量的数据
-    float* device_data;
+    // 用于存储张量的数据
+    ;
 
     // 将多维索引转换为一维索引
     int get_flat_index(const std::vector<int>& indices) const {
@@ -165,40 +201,20 @@ private:
     }
 };
 
-__global__ void relu_kernel(float* input,float* output,int size){
-    int idx=blockIdx.x*blockDim.x+threadIdx.x;
-    if(idx<size){
-        output[idx]=input[idx]>0?input[idx]:0;
-    }
-}
 
-
-__global__ void sigmoid_kernel(float* input,float* output,int size){
-    int idx=blockIdx.x*blockDim.x+threadIdx.x;
-    if(idx<size){
-        output[idx]=1/(1+exp(-input[idx]));
-    }
-}
-
-__global__ void relu_backward_kernel(float* input,float* grad,float* output,int size){
-    int idx=blockIdx.x*blockDim.x+threadIdx.x;
-    if(idx<size){
-        output[idx]=input[idx]>0?grad[idx]:0;
-    }
-}
 
 
 int main() {
-    std::vector<int> shape = {2, 3, 4};
+    std::vector<int> shape = { 2, 3, 4 };
     Tensor tensor(shape, "cpu");
-    tensor.
-    // 设置张量的值
-    tensor.set_value({0, 1, 2}, 10);
-    tensor.set_value({1, 2, 3}, 20);
-
+    tensor.set_value({ 0,1,2 }, 10);
+        // 设置张量的值.set_value({ 0, 1, 2 }, 10);
+    tensor.set_value({ 1, 2, 3 }, -20);
+    tensor.relu();
+  
     // 获取张量的值
-    std::cout << "Value at [0, 1, 2]: " << tensor.get_value({0, 1, 2}) << std::endl;
-    std::cout << "Value at [1, 2, 3]: " << tensor.get_value({1, 2, 3}) << std::endl;
+    std::cout << "Value at [0, 1, 2]: " << tensor.get_value({ 0, 1, 2 }) << std::endl;
+    std::cout << "Value at [1, 2, 3]: " << tensor.get_value({ 1, 2, 3 }) << std::endl;
 
     tensor.gpu();
     tensor.cpu();
